@@ -240,6 +240,45 @@ gcloud secrets add-iam-policy-binding "${SECRET_NAME}" \
   --role="roles/secretmanager.secretAccessor" --quiet
 success "Secret access granted"
 
+info "Setting up Grafana Reader Service Account..."
+GRAFANA_SA_NAME="grafana-reader"
+GRAFANA_SA_EMAIL="${GRAFANA_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+
+if gcloud iam service-accounts describe "${GRAFANA_SA_EMAIL}" --project="${PROJECT_ID}" &>/dev/null; then
+  warn "Service account '${GRAFANA_SA_EMAIL}' already exists — skipping creation"
+else
+  gcloud iam service-accounts create "${GRAFANA_SA_NAME}" \
+    --project="${PROJECT_ID}" \
+    --display-name="Grafana BigQuery & Monitoring Reader" \
+    --description="Read-only access for Grafana to BigQuery and Cloud Monitoring"
+  success "Grafana Service account created"
+fi
+
+for ROLE in \
+  "roles/bigquery.dataViewer" \
+  "roles/bigquery.jobUser" \
+  "roles/monitoring.viewer" \
+  "roles/compute.viewer"; do
+  gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+    --member="serviceAccount:${GRAFANA_SA_EMAIL}" \
+    --role="${ROLE}" \
+    --quiet 2>&1 | tail -1
+done
+success "Granted Grafana roles (BigQuery + Cloud Monitoring)"
+
+# Enable Cloud Resource Manager API for Grafana plugin
+gcloud services enable cloudresourcemanager.googleapis.com --project="${PROJECT_ID}" --quiet
+success "Enabled Cloud Resource Manager API for Grafana"
+
+GRAFANA_KEY_FILE="grafana-key.json"
+if [ ! -f "${GRAFANA_KEY_FILE}" ]; then
+  info "Exporting Grafana JSON key..."
+  gcloud iam service-accounts keys create "${GRAFANA_KEY_FILE}" \
+    --iam-account="${GRAFANA_SA_EMAIL}" \
+    --project="${PROJECT_ID}" --quiet
+  success "Exported ${GRAFANA_KEY_FILE} (keep this safe, do not commit!)"
+fi
+
 echo ""
 echo -e "${YELLOW}${BOLD}⚠️  MANUAL STEP REQUIRED — Share your Drive file${NC}"
 echo ""
