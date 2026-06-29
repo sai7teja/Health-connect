@@ -257,6 +257,7 @@ fi
 for ROLE in \
   "roles/bigquery.dataViewer" \
   "roles/bigquery.jobUser" \
+  "roles/bigquery.resourceViewer" \
   "roles/monitoring.viewer" \
   "roles/compute.viewer"; do
   gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
