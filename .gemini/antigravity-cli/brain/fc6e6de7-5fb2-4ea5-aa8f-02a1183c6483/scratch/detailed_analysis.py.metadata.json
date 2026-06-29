@@ -1,0 +1,4 @@
+{
+  "summary":  "A Python script that performs advanced queries on the Health Connect DuckDB database, including joining exercise sessions with heart rate series to calculate heart rate zone distribution and analyzing sleep metrics on workout vs rest days.",
+  "updatedAt":  "2026-06-29T11:11:15.829315380Z"
+}

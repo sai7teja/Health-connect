@@ -1,0 +1,5 @@
+{
+  "summary":  "A report listing all additional tables with data in the Health Connect SQLite database, including schemas, descriptions, and potential analyses for cadence, speed, calories, and GPS routes.",
+  "updatedAt":  "2026-06-29T11:15:13.328056383Z",
+  "userFacing":  true
+}

@@ -1,0 +1,5 @@
+{
+  "summary":  "An infrastructure and architecture blueprint for deploying the Google Cloud Platform (GCP) event-driven pipeline. It covers Drive webhook notifications, Pub/Sub triggers, Cloud Run services, BigQuery loading, and automated channel renewal.",
+  "updatedAt":  "2026-06-29T11:17:38.027725074Z",
+  "userFacing":  true
+}
