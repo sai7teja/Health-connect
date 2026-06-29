@@ -95,7 +95,7 @@ echo ""
 step "PHASE 0: Preflight Checks"
 
 # Check for required CLI tools
-REQUIRED_TOOLS=("gcloud" "docker" "terraform" "python3" "curl")
+REQUIRED_TOOLS=("gcloud" "terraform" "python3" "curl")
 for tool in "${REQUIRED_TOOLS[@]}"; do
   if command -v "$tool" &>/dev/null; then
     success "$tool is installed ($(command -v "$tool"))"
@@ -104,7 +104,6 @@ for tool in "${REQUIRED_TOOLS[@]}"; do
     echo ""
     case "$tool" in
       gcloud)    echo "  Install: https://cloud.google.com/sdk/docs/install" ;;
-      docker)    echo "  Install: https://docs.docker.com/engine/install/" ;;
       terraform) echo "  Install: https://developer.hashicorp.com/terraform/install" ;;
       python3)   echo "  Install: sudo apt install python3  (Ubuntu/WSL)" ;;
       curl)      echo "  Install: sudo apt install curl" ;;
@@ -158,6 +157,7 @@ gcloud services enable \
   iam.googleapis.com \
   secretmanager.googleapis.com \
   containerregistry.googleapis.com \
+  cloudbuild.googleapis.com \
   --project="${PROJECT_ID}" --quiet
 success "All APIs enabled"
 
@@ -256,40 +256,38 @@ echo ""
 pause
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  PHASE 3 — Docker Build & Push
+#  PHASE 3 — CI/CD Setup & Initial Build (Serverless)
 # ─────────────────────────────────────────────────────────────────────────────
-step "PHASE 3: Build & Push Docker Images"
+step "PHASE 3: CI/CD Setup & Initial Build"
 
-info "Configuring Docker to authenticate with GCR..."
-gcloud auth configure-docker gcr.io --quiet
-success "Docker configured for GCR"
+info "Granting Cloud Build permissions to deploy to Cloud Run..."
+PROJECT_NUMBER=$(gcloud projects describe "${PROJECT_ID}" --format="value(projectNumber)")
+CLOUDBUILD_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
 
-info "Building drive-receiver image..."
-# drive-receiver: Flask service that receives Google Drive webhooks,
-# downloads the updated zip file, and uploads it to GCS.
-docker build \
+# Allow Cloud Build to deploy to Cloud Run
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+  --member="serviceAccount:${CLOUDBUILD_SA}" \
+  --role="roles/run.admin" --quiet >/dev/null
+
+# Allow Cloud Build to attach the pipeline Service Account to Cloud Run
+gcloud iam service-accounts add-iam-policy-binding "${SA_EMAIL}" \
+  --member="serviceAccount:${CLOUDBUILD_SA}" \
+  --role="roles/iam.serviceAccountUser" --quiet >/dev/null
+success "Cloud Build IAM configured for autonomous CI/CD"
+
+info "Submitting initial build for drive-receiver (runs in Cloud Build, no local Docker needed)..."
+gcloud builds submit services/drive-receiver/ \
   --tag "${RECEIVER_IMAGE}" \
-  --file services/drive-receiver/Dockerfile \
-  services/drive-receiver/
-success "drive-receiver image built"
+  --project="${PROJECT_ID}" \
+  --quiet
+success "drive-receiver image built & pushed to GCR"
 
-info "Building parquet-migrator image..."
-# parquet-migrator: Triggered by Pub/Sub when a new zip lands in GCS.
-# Extracts the SQLite DB, converts all tables to Parquet via DuckDB,
-# uploads Parquet files to GCS, and loads them into BigQuery.
-docker build \
+info "Submitting initial build for parquet-migrator..."
+gcloud builds submit services/parquet-migrator/ \
   --tag "${MIGRATOR_IMAGE}" \
-  --file services/parquet-migrator/Dockerfile \
-  services/parquet-migrator/
-success "parquet-migrator image built"
-
-info "Pushing drive-receiver image to GCR..."
-docker push "${RECEIVER_IMAGE}"
-success "drive-receiver pushed: ${RECEIVER_IMAGE}"
-
-info "Pushing parquet-migrator image to GCR..."
-docker push "${MIGRATOR_IMAGE}"
-success "parquet-migrator pushed: ${MIGRATOR_IMAGE}"
+  --project="${PROJECT_ID}" \
+  --quiet
+success "parquet-migrator image built & pushed to GCR"
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  PHASE 4 — Terraform Infrastructure

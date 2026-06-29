@@ -66,6 +66,14 @@ resource "google_cloud_run_v2_service" "drive_receiver" {
     google_project_service.apis,
     google_secret_manager_secret.drive_sa_credentials,
   ]
+
+  lifecycle {
+    ignore_changes = [
+      template[0].containers[0].image,
+      client,
+      client_version
+    ]
+  }
 }
 
 # Allow public unauthenticated access to Drive Webhook receiver endpoint
@@ -104,6 +112,14 @@ resource "google_cloud_run_v2_service" "parquet_migrator" {
   }
 
   depends_on = [google_project_service.apis]
+
+  lifecycle {
+    ignore_changes = [
+      template[0].containers[0].image,
+      client,
+      client_version
+    ]
+  }
 }
 
 # Pub/Sub Push Subscription to invoke parquet-migrator on file upload

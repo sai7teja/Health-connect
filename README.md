@@ -303,17 +303,25 @@ gcloud secrets add-iam-policy-binding drive-sa-credentials \
 
 Open your Drive file → Share → Add `health-pipeline-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com` as **Viewer**.
 
-### Step 7 — Build & Push Docker Images
+### Step 7 — Initial Cloud Build (CI/CD)
 
 ```bash
-gcloud auth configure-docker gcr.io
+# Grant Cloud Build permissions to deploy to Cloud Run
+PROJECT_NUMBER=$(gcloud projects describe YOUR_PROJECT --format="value(projectNumber)")
+CLOUDBUILD_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
 
-docker build -t gcr.io/YOUR_PROJECT/drive-receiver:latest ./services/drive-receiver/
-docker build -t gcr.io/YOUR_PROJECT/parquet-migrator:latest ./services/parquet-migrator/
+gcloud projects add-iam-policy-binding YOUR_PROJECT \
+  --member="serviceAccount:${CLOUDBUILD_SA}" --role="roles/run.admin"
 
-docker push gcr.io/YOUR_PROJECT/drive-receiver:latest
-docker push gcr.io/YOUR_PROJECT/parquet-migrator:latest
+gcloud iam service-accounts add-iam-policy-binding "${SA_EMAIL}" \
+  --member="serviceAccount:${CLOUDBUILD_SA}" --role="roles/iam.serviceAccountUser"
+
+# Submit initial builds to Cloud Build (serverless, no local Docker needed)
+gcloud builds submit services/drive-receiver/ --tag gcr.io/YOUR_PROJECT/drive-receiver:latest
+gcloud builds submit services/parquet-migrator/ --tag gcr.io/YOUR_PROJECT/parquet-migrator:latest
 ```
+
+> **Automating CI/CD with GitHub:** To make this completely autonomous, go to **GCP Console > Cloud Build > Triggers**, connect your GitHub repo, and create two triggers pointing to the `cloudbuild.yaml` files in each service directory. Set the "Included files" filter to `services/drive-receiver/**` and `services/parquet-migrator/**` respectively. This guarantees that a change to one service won't rebuild the other!
 
 ### Step 8 — Deploy Infrastructure with Terraform
 

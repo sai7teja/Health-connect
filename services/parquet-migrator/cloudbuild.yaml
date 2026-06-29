@@ -1,0 +1,26 @@
+steps:
+  # Build the container image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/parquet-migrator:$COMMIT_SHA', '-t', 'gcr.io/$PROJECT_ID/parquet-migrator:latest', 'services/parquet-migrator/']
+  
+  # Push the container image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/parquet-migrator', '--all-tags']
+  
+  # Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'parquet-migrator'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/parquet-migrator:$COMMIT_SHA'
+      - '--region'
+      - 'us-central1'
+      - '--project'
+      - '$PROJECT_ID'
+      
+images:
+  - 'gcr.io/$PROJECT_ID/parquet-migrator:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/parquet-migrator:latest'
