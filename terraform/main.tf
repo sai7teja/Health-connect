@@ -1,4 +1,8 @@
 terraform {
+  backend "gcs" {
+    bucket = "lazybot7-terraform-state"
+    prefix = "terraform/state"
+  }
   required_version = ">= 1.3.0"
   required_providers {
     google = {

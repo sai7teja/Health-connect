@@ -1,8 +1,20 @@
 steps:
-  # Build the container image
+  # Pull the previous latest image to use as cache
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['build', '-t', 'gcr.io/$PROJECT_ID/drive-receiver:$COMMIT_SHA', '-t', 'gcr.io/$PROJECT_ID/drive-receiver:latest', 'services/drive-receiver/']
-  
+    entrypoint: 'bash'
+    args: ['-c', 'docker pull gcr.io/$PROJECT_ID/drive-receiver:latest || exit 0']
+
+  # Build the container image with caching
+  - name: 'gcr.io/cloud-builders/docker'
+    args: 
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/drive-receiver:$COMMIT_SHA'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/drive-receiver:latest'
+      - '--cache-from'
+      - 'gcr.io/$PROJECT_ID/drive-receiver:latest'
+      - 'services/drive-receiver/'
   # Push the container image to Container Registry
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', 'gcr.io/$PROJECT_ID/drive-receiver', '--all-tags']
