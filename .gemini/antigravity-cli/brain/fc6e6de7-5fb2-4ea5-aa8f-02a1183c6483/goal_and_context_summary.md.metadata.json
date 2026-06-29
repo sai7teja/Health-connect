@@ -1,5 +1,0 @@
-{
-  "summary":  "Goal and context summary extracted from the previous kiro.chat.log conversation. Details the SQLite to DuckDB/Parquet migration and the cloud-based serverless sync pipeline plan.",
-  "updatedAt":  "2026-06-29T11:00:51.976847176Z",
-  "userFacing":  true
-}

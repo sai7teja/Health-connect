@@ -1,4 +1,0 @@
-{
-  "summary":  "A python script that executes analytical SQL queries against the local DuckDB database using only standard library modules to avoid dependency issues.",
-  "updatedAt":  "2026-06-29T11:07:04.793892418Z"
-}
