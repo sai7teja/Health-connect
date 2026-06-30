@@ -555,6 +555,43 @@ GROUP BY EXTRACT(DAYOFWEEK FROM TIMESTAMP_MILLIS(start_time)), day_of_week
 ORDER BY EXTRACT(DAYOFWEEK FROM TIMESTAMP_MILLIS(start_time))
 ```
 
+## 🛡️ Reliability & Operations
+
+The pipeline is hardened with several reliability features:
+
+### Dead Letter Queue (DLQ)
+If `parquet-migrator` fails to process a message after **5 retries** (with exponential backoff from 10s to 600s), the message is automatically forwarded to a dead letter topic (`health-pipeline-dead-letter`) instead of being silently dropped.
+
+```bash
+# Check for failed messages in the dead letter subscription
+gcloud pubsub subscriptions pull health-pipeline-dead-letter-sub --limit=5
+```
+
+### Data Freshness Monitoring
+The `parquet-migrator` service exposes a `/status` endpoint that queries BigQuery and reports how old your latest data is:
+
+```bash
+# Check data freshness (returns 'fresh' if <72h, 'stale' if >72h)
+curl -s YOUR_MIGRATOR_URL/status | python3 -m json.tool
+```
+
+### Pipeline Failure Alerting (Grafana)
+To get notified when the pipeline breaks:
+1. In Grafana, go to **Alerting** → **Alert rules** → **New alert rule**
+2. Query: Cloud Run `request_count` metric filtered by `response_code_class = 5xx`
+3. Condition: Count > 0 in the last 1 hour
+4. Notification: Email or Slack/Discord webhook
+
+### Budget Alert (GCP Console)
+To protect against unexpected charges:
+1. Go to **Billing** → **Budgets & alerts** → **Create budget**
+2. Set amount to **$1.00**
+3. Set alert thresholds at 50%, 90%, 100%
+4. Enable email notifications
+
+### Resource Limits
+Both Cloud Run services have explicit limits (`512Mi` memory, `1 CPU`) to prevent runaway resource consumption while staying within the free tier.
+
 ---
 
 ## 🔐 Security Architecture
@@ -681,11 +718,11 @@ docker pull gcr.io/YOUR_PROJECT/drive-receiver:latest
 
 - [ ] **Incremental BigQuery loads** — append only new records using watermarks
 - [ ] **LLM Health Insights** — scheduled Cloud Run job exports weekly summaries to Gemini for personalized health recommendations
-- [ ] **Grafana dashboard export** — share pre-built dashboard JSON
+- [x] ~~**Grafana dashboard export** — share pre-built dashboard JSON~~ ✅ Done
 - [ ] **Sleep score computation** — BigQuery view that approximates Samsung's sleep score algorithm
 - [ ] **Alert policies** — Cloud Monitoring alerts when RHR spikes >5 BPM above 7-day baseline
 - [ ] **Multi-user support** — parameterize by Drive file ID for family health tracking
-- [ ] **Terraform Cloud backend** — remote state storage for team environments
+- [x] ~~**Terraform Cloud backend** — remote state storage for team environments~~ ✅ Done (GCS backend)
 
 ---
 

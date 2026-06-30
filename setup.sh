@@ -158,6 +158,8 @@ gcloud services enable \
   secretmanager.googleapis.com \
   containerregistry.googleapis.com \
   cloudbuild.googleapis.com \
+  cloudresourcemanager.googleapis.com \
+  monitoring.googleapis.com \
   --project="${PROJECT_ID}" --quiet
 success "All APIs enabled"
 
