@@ -36,6 +36,13 @@ resource "google_cloud_run_v2_service" "drive_receiver" {
     containers {
       image = "gcr.io/${var.project_id}/drive-receiver:latest"
 
+      resources {
+        limits = {
+          memory = "512Mi"
+          cpu    = "1"
+        }
+      }
+
       env {
         name  = "GCP_PROJECT"
         value = var.project_id
@@ -95,6 +102,13 @@ resource "google_cloud_run_v2_service" "parquet_migrator" {
     service_account = google_service_account.pipeline_sa.email
     containers {
       image = "gcr.io/${var.project_id}/parquet-migrator:latest" # Image will be built & pushed during deployment
+
+      resources {
+        limits = {
+          memory = "512Mi"
+          cpu    = "1"
+        }
+      }
       
       env {
         name  = "PROCESSED_BUCKET_NAME"
@@ -127,11 +141,26 @@ resource "google_pubsub_subscription" "migrator_push_sub" {
   name  = "parquet-migrator-gcs-trigger"
   topic = google_pubsub_topic.gcs_topic.name
 
+  # Match the gunicorn timeout (120s) to prevent premature retries
+  ack_deadline_seconds = 120
+
   push_config {
     push_endpoint = google_cloud_run_v2_service.parquet_migrator.uri
     oidc_token {
       service_account_email = google_service_account.pipeline_sa.email
     }
+  }
+
+  # Exponential backoff: wait 10s → 20s → 40s → ... up to 600s between retries
+  retry_policy {
+    minimum_backoff = "10s"
+    maximum_backoff = "600s"
+  }
+
+  # After 5 failed delivery attempts, forward message to dead letter topic
+  dead_letter_policy {
+    dead_letter_topic     = google_pubsub_topic.dead_letter_topic.id
+    max_delivery_attempts = 5
   }
 
   depends_on = [google_pubsub_topic.gcs_topic]

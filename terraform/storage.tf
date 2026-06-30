@@ -25,6 +25,15 @@ resource "google_storage_bucket" "processed_bucket" {
   force_destroy = false
 
   uniform_bucket_level_access = true
+
+  lifecycle_rule {
+    condition {
+      age = 30 # Auto-delete old Parquet files after 30 days (BigQuery already has the data)
+    }
+    action {
+      type = "Delete"
+    }
+  }
   
   depends_on = [google_project_service.apis]
 }
