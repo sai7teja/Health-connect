@@ -118,6 +118,41 @@ def index():
         logger.error(f"Error processing Parquet migration: {str(e)}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route("/status", methods=["GET"])
+def status():
+    """Returns pipeline health by checking the freshness of BigQuery data.
+    If the most recent record is older than 72 hours, reports 'stale'.
+    """
+    try:
+        from google.cloud import bigquery
+        from datetime import datetime, timezone
+
+        client = bigquery.Client()
+        dataset_id = os.environ.get("BQ_DATASET_ID", "health_analytics")
+
+        query = f"""
+            SELECT TIMESTAMP_MILLIS(MAX(start_time)) AS latest_record
+            FROM `{client.project}.{dataset_id}.steps_record_table`
+        """
+        result = list(client.query(query).result())
+
+        if result and result[0].latest_record:
+            latest = result[0].latest_record
+            age_hours = (datetime.now(timezone.utc) - latest).total_seconds() / 3600
+            freshness = "fresh" if age_hours < 72 else "stale"
+            return jsonify({
+                "status": freshness,
+                "latest_record": latest.isoformat(),
+                "age_hours": round(age_hours, 1),
+                "threshold_hours": 72
+            }), 200
+        else:
+            return jsonify({"status": "empty", "message": "No data in BigQuery yet"}), 200
+
+    except Exception as e:
+        logger.error(f"Status check failed: {str(e)}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "healthy"}), 200
