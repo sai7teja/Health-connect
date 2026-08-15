@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 
 # ── Environment config ──────────────────────────────────────────────────────
-PROJECT_ID   = os.environ.get("GCP_PROJECT", "lazybot7")
+PROJECT_ID   = os.environ.get("GCP_PROJECT", "your-project-id")
 RAW_BUCKET   = os.environ.get("RAW_BUCKET_NAME")
 FILE_ID      = os.environ.get("DRIVE_FILE_ID")          # Drive file ID
 WEBHOOK_URL  = os.environ.get("WEBHOOK_URL")

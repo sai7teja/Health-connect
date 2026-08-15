@@ -1,6 +1,6 @@
 terraform {
   backend "gcs" {
-    bucket = "lazybot7-terraform-state"
+    bucket = "your-project-terraform-state"
     prefix = "terraform/state"
   }
   required_version = ">= 1.3.0"

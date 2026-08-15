@@ -20,7 +20,7 @@ IFS=$'\n\t'         # Safer word-splitting
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Your GCP Project ID (find it at console.cloud.google.com)
-PROJECT_ID="lazybot7"
+PROJECT_ID="your-gcp-project-id"
 
 # The Google Drive FILE ID of your health_connect_export.zip
 # From the file URL: drive.google.com/file/d/THIS_PART/view
