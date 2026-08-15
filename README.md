@@ -1,65 +1,18 @@
-# 🏃 Health Connect → GCP Serverless Analytics Pipeline
+# Health Connect → BigQuery Pipeline
 
-> **A fully automated, event-driven, always-free data pipeline that syncs your Android Health Connect data to Google BigQuery and visualizes it in Grafana — triggered automatically every time you export a backup from your phone.**
+Automatically sync your Android Health Connect data to BigQuery for analysis and visualization. Built with GCP serverless services, runs entirely on the free tier.
 
-[![GCP Free Tier](https://img.shields.io/badge/GCP-Free%20Tier-blue?logo=google-cloud)](https://cloud.google.com/free)
-[![Cloud Run](https://img.shields.io/badge/Cloud%20Run-Serverless-green?logo=google-cloud)](https://cloud.google.com/run)
-[![BigQuery](https://img.shields.io/badge/BigQuery-Analytics-orange?logo=google-cloud)](https://cloud.google.com/bigquery)
-[![Terraform](https://img.shields.io/badge/Terraform-IaC-purple?logo=terraform)](https://terraform.io)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+## What it does
 
----
+1. Export your health data from Android Health Connect to Google Drive
+2. Pipeline automatically detects the file change
+3. Extracts and converts SQLite data to Parquet format
+4. Loads 18 health tables into BigQuery
+5. Visualize in Grafana or query directly
 
-## 📖 Table of Contents
+**Cost: $0/month** (stays within GCP free tier limits)
 
-1. [What This Project Does](#-what-this-project-does)
-2. [Architecture Overview](#-architecture-overview)
-3. [Data Available](#-data-available)
-4. [Tech Stack & Free Tier Usage](#-tech-stack--free-tier-usage)
-5. [Prerequisites](#-prerequisites)
-6. [Quick Start](#-quick-start)
-7. [Step-by-Step Manual Setup](#-step-by-step-manual-setup)
-8. [Directory Structure](#-directory-structure)
-9. [Services Deep Dive](#-services-deep-dive)
-10. [Grafana Dashboard Setup](#-grafana-dashboard-setup)
-11. [Security Architecture](#-security-architecture)
-12. [Known Limitations](#-known-limitations)
-13. [Troubleshooting](#-troubleshooting)
-14. [Contributing](#-contributing)
-15. [License](#-license)
-
----
-
-## 🎯 What This Project Does
-
-Android's **Health Connect** app lets you export all your health data (steps, heart rate, sleep, workouts, GPS routes, calories) into a single SQLite database ZIP file. This project takes that ZIP file and builds a fully automated cloud pipeline around it:
-
-1. **You export** a backup from your phone to Google Drive (one tap)
-2. **Google Drive detects** the file changed and fires a webhook
-3. **Cloud Run** downloads the ZIP, extracts the SQLite database, converts every table to compressed Parquet format using DuckDB
-4. **BigQuery** receives all 18 health tables, ready for SQL analytics
-5. **Grafana** connects to BigQuery and visualizes your health trends in beautiful dashboards
-
-**The entire pipeline runs on GCP's Always Free tier — $0/month.**
-
-### What You Get
-
-| Metric | Coverage | Rows |
-|---|---|---|
-| Steps | 273/290 days (94%) | 57,024 |
-| Distance | 268/290 days (92%) | 29,872 |
-| Heart Rate | 130,988 samples, 189 days | 130,988 |
-| Sleep Sessions | 144 days (50%) | 209 |
-| Sleep Stages | 4,205 segments | 4,205 |
-| Calories (Total) | 25,049 records | 25,049 |
-| Exercise Sessions | 199 workouts | 199 |
-| Resting Heart Rate | 133 days | 133 |
-| GPS Routes | 1,723 GPS points | 1,723 |
-| + 9 more tables | — | — |
-
----
-
-## 🗺️ Architecture Overview
+## Architecture
 
 <div align="center">
 
@@ -67,755 +20,252 @@ Android's **Health Connect** app lets you export all your health data (steps, he
 %%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#4285f4','primaryTextColor':'#fff','primaryBorderColor':'#1a73e8','lineColor':'#34a853','secondaryColor':'#fbbc04','tertiaryColor':'#ea4335','fontSize':'16px'}}}%%
 
 graph TB
-    subgraph Phone["📱 YOUR ANDROID PHONE"]
-        HC[Health Connect App]
-        Export[Export Data]
-        HC -->|Export| Export
+    subgraph Phone["📱 Android Phone"]
+        HC[Health Connect]
+        Export[Export ZIP]
+        HC --> Export
     end
 
-    subgraph Drive["☁️ GOOGLE DRIVE"]
-        ZipFile["health_connect_export.zip<br/>📦 SQLite Database"]
-        Watch["files.watch API<br/>🔔 Change Detection"]
-        Export -->|Upload| ZipFile
-        ZipFile -->|File Updated| Watch
+    subgraph Drive["☁️ Google Drive"]
+        File["health_connect_export.zip"]
+        Watch["File Watch API"]
+        Export -->|Upload| File
+        File -->|Change Event| Watch
     end
 
-    subgraph CloudRun1["⚡ CLOUD RUN: drive-receiver"]
-        Webhook["🔗 Webhook Endpoint<br/>/webhook"]
-        Download["⬇️ Download ZIP<br/>Streaming (8MB chunks)"]
-        Validate["✅ Validate Headers<br/>Security Check"]
-        Watch -->|HTTP POST| Webhook
-        Webhook --> Validate
-        Validate --> Download
+    subgraph CR1["⚡ drive-receiver"]
+        Webhook["/webhook endpoint"]
+        Download["Download & Upload"]
+        Watch -->|POST| Webhook
+        Webhook --> Download
     end
 
-    subgraph SecretMgr["🔐 SECRET MANAGER"]
-        Creds["🔑 Service Account Key<br/>drive-sa-credentials"]
-        Download -.->|Fetch Credentials| Creds
+    subgraph Storage1["📦 Cloud Storage"]
+        Raw["Raw ZIP bucket"]
+        Download --> Raw
     end
 
-    subgraph GCS1["📦 CLOUD STORAGE"]
-        RawBucket["gs://health-raw-zip/<br/>🗄️ Raw ZIP Storage"]
-        Download -->|Upload| RawBucket
+    subgraph PS["📢 Pub/Sub"]
+        Topic["Event topic"]
+        Raw -->|FINALIZE| Topic
     end
 
-    subgraph PubSub["📢 CLOUD PUB/SUB"]
-        Topic["health-pipeline-topic<br/>📨 Event Stream"]
-        Subscription["Push Subscription<br/>🔔 OIDC Auth"]
-        RawBucket -->|OBJECT_FINALIZE| Topic
-        Topic --> Subscription
+    subgraph CR2["⚡ parquet-migrator"]
+        Process["Extract → Convert → Load"]
+        Topic --> Process
     end
 
-    subgraph CloudRun2["⚡ CLOUD RUN: parquet-migrator"]
-        Receiver["📥 Event Handler<br/>Flask + DuckDB"]
-        Extract["📂 Extract SQLite<br/>health_connect_export.db"]
-        Convert["🔄 Convert to Parquet<br/>18 Tables → ZSTD Compressed"]
-        Subscription -->|Authenticated POST| Receiver
-        Receiver --> Extract
-        Extract --> Convert
+    subgraph BQ["📊 BigQuery"]
+        Dataset["health_analytics<br/>18 tables"]
+        Process --> Dataset
     end
 
-    subgraph GCS2["📦 CLOUD STORAGE"]
-        ProcessedBucket["gs://health-processed-parquet/<br/>💾 Parquet Storage"]
-        Convert -->|Upload| ProcessedBucket
+    subgraph Graf["📈 Grafana"]
+        Dash["Dashboards"]
+        Dataset --> Dash
     end
 
-    subgraph BigQuery["📊 BIGQUERY"]
-        Dataset["health_analytics Dataset<br/>🗂️ 18 Tables"]
-        Tables["✨ Tables:<br/>• steps_record<br/>• heart_rate_series<br/>• sleep_sessions<br/>• exercise_sessions<br/>+ 14 more"]
-        Convert -->|Load Data<br/>WRITE_TRUNCATE| Dataset
-        Dataset --> Tables
-    end
-
-    subgraph Grafana["📈 GRAFANA CLOUD"]
-        Plugin["BigQuery Plugin<br/>🔌 Data Source"]
-        Dashboards["📊 Dashboards<br/>Activity • Sleep • HR • Recovery"]
-        Tables -->|SQL Queries| Plugin
-        Plugin --> Dashboards
-    end
-
-    subgraph Scheduler["⏰ CLOUD SCHEDULER"]
-        Cron["Cron Job<br/>⏱️ Every 45 minutes"]
-        Renew["POST /renew<br/>🔄 Refresh Watch Channel"]
-        Cron -->|Trigger| Renew
-        Renew -.->|files.watch API| Watch
-    end
-
-    style Phone fill:#34a853,stroke:#137333,stroke-width:3px,color:#fff
-    style Drive fill:#4285f4,stroke:#1a73e8,stroke-width:3px,color:#fff
-    style CloudRun1 fill:#ea4335,stroke:#c5221f,stroke-width:3px,color:#fff
-    style CloudRun2 fill:#ea4335,stroke:#c5221f,stroke-width:3px,color:#fff
-    style SecretMgr fill:#fbbc04,stroke:#f29900,stroke-width:3px,color:#333
-    style GCS1 fill:#0f9d58,stroke:#0b8043,stroke-width:3px,color:#fff
-    style GCS2 fill:#0f9d58,stroke:#0b8043,stroke-width:3px,color:#fff
-    style PubSub fill:#669df6,stroke:#4285f4,stroke-width:3px,color:#fff
-    style BigQuery fill:#4285f4,stroke:#1a73e8,stroke-width:3px,color:#fff
-    style Grafana fill:#f46800,stroke:#d14900,stroke-width:3px,color:#fff
-    style Scheduler fill:#fbbc04,stroke:#f29900,stroke-width:3px,color:#333
+    style Phone fill:#34a853,stroke:#137333,stroke-width:2px,color:#fff
+    style Drive fill:#4285f4,stroke:#1a73e8,stroke-width:2px,color:#fff
+    style CR1 fill:#ea4335,stroke:#c5221f,stroke-width:2px,color:#fff
+    style CR2 fill:#ea4335,stroke:#c5221f,stroke-width:2px,color:#fff
+    style Storage1 fill:#0f9d58,stroke:#0b8043,stroke-width:2px,color:#fff
+    style PS fill:#669df6,stroke:#4285f4,stroke-width:2px,color:#fff
+    style BQ fill:#4285f4,stroke:#1a73e8,stroke-width:2px,color:#fff
+    style Graf fill:#f46800,stroke:#d14900,stroke-width:2px,color:#fff
 ```
 
 </div>
 
-### 🔄 Event Flow Summary
+**Flow:** Phone → Drive → Cloud Run → Storage → Pub/Sub → Cloud Run → BigQuery → Grafana
 
-| Step | Service | Action | Trigger |
-|------|---------|--------|---------|
-| 1️⃣ | **Android Phone** | Export health data to Google Drive | Manual (one tap) |
-| 2️⃣ | **Google Drive** | Detect file change, fire webhook | File updated event |
-| 3️⃣ | **drive-receiver** | Download ZIP, upload to GCS | Webhook POST |
-| 4️⃣ | **Cloud Storage** | Store raw ZIP, trigger Pub/Sub | OBJECT_FINALIZE |
-| 5️⃣ | **Pub/Sub** | Route event to processor | Topic subscription |
-| 6️⃣ | **parquet-migrator** | Extract → Convert → Load | Push subscription |
-| 7️⃣ | **BigQuery** | Store 18 health tables | Load job complete |
-| 8️⃣ | **Grafana** | Query & visualize data | User access |
-| 🔁 | **Cloud Scheduler** | Renew Drive watch (every 45 min) | Cron schedule |
+## Data Available
 
-### ⚡ Key Features
+All tables from Health Connect, including:
+- Steps, distance, calories (active & total)
+- Heart rate (continuous series + resting HR)
+- Sleep sessions and stages (REM/Deep/Light/Awake)
+- Exercise sessions, routes (GPS), segments, laps
+- Body metrics (weight, height)
 
-- **🚀 Fully Serverless** - No servers to manage, scales automatically
-- **💰 Always Free** - Runs on GCP Free Tier ($0/month)
-- **🔐 Secure by Design** - No JSON keys on disk, Secret Manager for credentials
-- **📊 18 Health Tables** - Steps, HR, Sleep, Workouts, GPS routes, and more
-- **🔄 Auto-Sync** - Updates within minutes of Drive file change
-- **📈 Beautiful Dashboards** - Grafana Cloud with BigQuery datasource
+Full list: `steps_record`, `heart_rate_series`, `sleep_sessions`, `sleep_stages`, `exercise_sessions`, `distance`, `elevation_gained`, and 11 more.
 
----
+## Setup
 
-## 📊 Data Available
+### Prerequisites
 
-All 18 tables land in BigQuery under the `health_analytics` dataset:
+- GCP project with billing enabled (free tier is enough)
+- Google Drive account
+- Android phone with Health Connect
 
-| Table | Description | Key Columns |
-|---|---|---|
-| `steps_record_table` | Step counts per interval | `start_time`, `end_time`, `count` |
-| `heart_rate_record_series_table` | Continuous HR readings | `epoch_millis`, `beats_per_minute` |
-| `heart_rate_record_table` | HR session boundaries | `start_time`, `end_time` |
-| `sleep_session_record_table` | Sleep sessions | `start_time`, `end_time` |
-| `sleep_stages_table` | Deep/REM/Light/Awake stages | `stage_type`, `stage_start_time`, `stage_end_time` |
-| `distance_record_table` | Distance per interval | `start_time`, `end_time`, `distance` (meters) |
-| `active_calories_burned_record_table` | Active calorie burn | `start_time`, `end_time`, `active_calories_burned` |
-| `total_calories_burned_record_table` | Total calorie burn | `start_time`, `end_time`, `energy` (Joules → kCal = /4184) |
-| `exercise_session_record_table` | Workout sessions | `start_time`, `end_time`, `exercise_type` |
-| `exercise_route_table` | GPS coordinates | `timestamp_millis`, `latitude`, `longitude`, `altitude` |
-| `exercise_segments_table` | Workout splits/sets | `segment_type`, `repetitions_count`, `weight_grams` |
-| `resting_heart_rate_record_table` | Resting HR per day | `time`, `beats_per_minute` |
-| `weight_record_table` | Body weight entries | `time`, `weight` (grams → kg = /1000) |
-| `steps_cadence_record_table` | Cadence time series | `epoch_millis`, `rate` (steps/min) |
-| `speed_record_table` | Speed time series | `epoch_millis`, `speed` (m/s) |
-| `elevation_gained_record_table` | Elevation climbed | `start_time`, `end_time`, `elevation` (meters) |
-| `application_info_table` | Source apps | `package_name`, `app_name` |
-| `device_info_table` | Recording devices | `manufacturer`, `model` |
+### Quick Start
 
-### Sleep Stage Type Reference
-
-| `stage_type` value | Meaning |
-|---|---|
-| 1 | Awake |
-| 4 | Light Sleep |
-| 5 | Deep Sleep |
-| 6 | REM Sleep |
-
----
-
-## 🛠️ Tech Stack & Free Tier Usage
-
-| GCP Service | Role | Free Tier Limit | Our Usage |
-|---|---|---|---|
-| **Cloud Run** | Serverless containers | 2M requests/mo, 360K vCPU-sec/mo | ~30 invocations/mo |
-| **Cloud Storage** | File storage | 5 GB Standard | ~200 MB |
-| **Cloud Pub/Sub** | Event routing | 10 GB/mo | ~30 MB/mo |
-| **BigQuery** | Data warehouse | 10 GB storage, 1 TB query/mo | ~200 MB storage |
-| **Secret Manager** | Secure credentials | 6 active secrets free | 1 secret |
-| **Cloud Scheduler** | Cron jobs | 3 jobs/mo free | 1 job |
-| **Container Registry** | Docker images | Part of GCS (5 GB) | ~1 GB |
-| **Google Drive API** | File watching | Free | push notifications |
-
-**Estimated monthly cost: $0.00** ✅
-
----
-
-## 📋 Prerequisites
-
-### Required Tools
-
-| Tool | Version | Install |
-|---|---|---|
-| `gcloud` CLI | Latest | [cloud.google.com/sdk/docs/install](https://cloud.google.com/sdk/docs/install) |
-| `docker` | 20.x+ | [docs.docker.com/engine/install](https://docs.docker.com/engine/install/) |
-| `terraform` | 1.3.0+ | [developer.hashicorp.com/terraform/install](https://developer.hashicorp.com/terraform/install) |
-| `python3` | 3.9+ | Pre-installed on most systems |
-| `curl` | Any | `sudo apt install curl` |
-
-### Required Accounts
-
-- **Google Account** with a GCP project (billing enabled — but we stay within free limits)
-- **Grafana Cloud** free account → [grafana.com/auth/sign-up](https://grafana.com/auth/sign-up)
-- **Android phone** with Health Connect installed and exporting data
-
-### Verify Installation
-
-```bash
-gcloud --version
-docker --version
-terraform --version
-python3 --version
-```
-
----
-
-## ⚡ Quick Start
-
-```bash
-# 1. Clone the repo
-git clone https://github.com/YOUR_USERNAME/health-connect-pipeline.git
-cd health-connect-pipeline
-
-# 2. Edit the config section at the top of setup.sh
-nano setup.sh   # Set PROJECT_ID and DRIVE_FILE_ID
-
-# 3. Run the automated setup (takes ~10 minutes)
-chmod +x setup.sh
-./setup.sh
-```
-
-That's it! The script handles everything automatically.
-
----
-
-## 📚 Step-by-Step Manual Setup
-
-If you prefer to understand and run each step manually, follow this guide.
-
-### Step 1 — Prepare Your Google Drive File
-
-1. Install **Health Connect** on your Android phone
-2. Open Health Connect → Settings → **Export health data**
-3. Export to Google Drive (creates `health_connect_export.zip`)
-4. Note the **file ID** from the Drive URL:
-   ```
-   https://drive.google.com/file/d/THIS_IS_YOUR_FILE_ID/view
+1. **Clone and configure**
+   ```bash
+   git clone https://github.com/sai7teja/Health-connect.git
+   cd Health-connect
    ```
 
-### Step 2 — Clone & Configure
+2. **Edit `setup.sh`** - Set your project ID and Drive file ID at the top
 
+3. **Run setup**
+   ```bash
+   chmod +x setup.sh
+   ./setup.sh
+   ```
+
+The script handles everything: API enablement, service accounts, Docker builds, Terraform deployment.
+
+### Manual Setup (if you prefer)
+
+<details>
+<summary>Click to expand step-by-step instructions</summary>
+
+**1. Enable APIs**
 ```bash
-git clone https://github.com/YOUR_USERNAME/health-connect-pipeline.git
-cd health-connect-pipeline
+gcloud services enable run.googleapis.com storage.googleapis.com \
+  bigquery.googleapis.com pubsub.googleapis.com secretmanager.googleapis.com
 ```
 
-Edit `terraform/terraform.tfvars`:
-```hcl
-project_id    = "your-gcp-project-id"
-drive_file_id = "your-drive-file-id"
-region        = "us-central1"
-```
-
-### Step 3 — Authenticate gcloud
-
+**2. Create service account**
 ```bash
-gcloud auth login
-gcloud config set project YOUR_PROJECT_ID
-gcloud auth application-default login   # Needed for Terraform
-```
+gcloud iam service-accounts create health-pipeline-sa
+SA_EMAIL="health-pipeline-sa@YOUR_PROJECT.iam.gserviceaccount.com"
 
-### Step 4 — Enable APIs
-
-```bash
-gcloud services enable \
-  run.googleapis.com pubsub.googleapis.com storage.googleapis.com \
-  bigquery.googleapis.com drive.googleapis.com \
-  cloudscheduler.googleapis.com iam.googleapis.com \
-  secretmanager.googleapis.com containerregistry.googleapis.com
-```
-
-### Step 5 — Create Service Account & Store Credentials
-
-```bash
-# Create the service account
-gcloud iam service-accounts create health-pipeline-sa \
-  --display-name="Health Pipeline Service Account"
-
-SA_EMAIL="health-pipeline-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com"
-
-# Grant required roles
-for ROLE in roles/storage.objectAdmin roles/bigquery.admin \
-            roles/run.invoker roles/pubsub.publisher \
-            roles/pubsub.subscriber roles/secretmanager.secretAccessor; do
-  gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
-    --member="serviceAccount:${SA_EMAIL}" --role="${ROLE}" --quiet
+# Grant permissions
+for ROLE in roles/storage.objectAdmin roles/bigquery.admin roles/secretmanager.secretAccessor; do
+  gcloud projects add-iam-policy-binding YOUR_PROJECT \
+    --member="serviceAccount:${SA_EMAIL}" --role="${ROLE}"
 done
-
-# Create key → store in Secret Manager → delete local file
-gcloud iam service-accounts keys create /tmp/sa-key.json \
-  --iam-account="${SA_EMAIL}"
-
-gcloud secrets create drive-sa-credentials \
-  --replication-policy=automatic \
-  --data-file=/tmp/sa-key.json
-
-rm /tmp/sa-key.json   # Delete immediately — no JSON files left!
-
-# Grant pipeline SA access to read its own secret
-gcloud secrets add-iam-policy-binding drive-sa-credentials \
-  --member="serviceAccount:${SA_EMAIL}" \
-  --role="roles/secretmanager.secretAccessor"
 ```
 
-### Step 6 — Share Drive File With Service Account
-
-Open your Drive file → Share → Add `health-pipeline-sa@YOUR_PROJECT_ID.iam.gserviceaccount.com` as **Viewer**.
-
-### Step 7 — Initial Cloud Build (CI/CD)
-
+**3. Store credentials in Secret Manager**
 ```bash
-# Grant Cloud Build permissions to deploy to Cloud Run
-PROJECT_NUMBER=$(gcloud projects describe YOUR_PROJECT --format="value(projectNumber)")
-CLOUDBUILD_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
-
-gcloud projects add-iam-policy-binding YOUR_PROJECT \
-  --member="serviceAccount:${CLOUDBUILD_SA}" --role="roles/run.admin"
-
-gcloud iam service-accounts add-iam-policy-binding "${SA_EMAIL}" \
-  --member="serviceAccount:${CLOUDBUILD_SA}" --role="roles/iam.serviceAccountUser"
-
-# Submit initial builds to Cloud Build (serverless, no local Docker needed)
-gcloud builds submit services/drive-receiver/ --tag gcr.io/YOUR_PROJECT/drive-receiver:latest
-gcloud builds submit services/parquet-migrator/ --tag gcr.io/YOUR_PROJECT/parquet-migrator:latest
+gcloud iam service-accounts keys create /tmp/sa-key.json --iam-account="${SA_EMAIL}"
+gcloud secrets create drive-sa-credentials --data-file=/tmp/sa-key.json
+rm /tmp/sa-key.json  # Important: delete local copy
 ```
 
-> **Automating CI/CD with GitHub:** To make this completely autonomous, go to **GCP Console > Cloud Build > Triggers**, connect your GitHub repo, and create two triggers pointing to the `cloudbuild.yaml` files in each service directory. Set the "Included files" filter to `services/drive-receiver/**` and `services/parquet-migrator/**` respectively. This guarantees that a change to one service won't rebuild the other!
+**4. Share Drive file with service account**
+- Open your health export ZIP in Drive
+- Share with `health-pipeline-sa@YOUR_PROJECT.iam.gserviceaccount.com` (Viewer)
 
-### Step 8 — Deploy Infrastructure with Terraform
-
+**5. Build and deploy**
 ```bash
+# Build containers
+gcloud builds submit services/drive-receiver/ --tag gcr.io/YOUR_PROJECT/drive-receiver
+gcloud builds submit services/parquet-migrator/ --tag gcr.io/YOUR_PROJECT/parquet-migrator
+
+# Deploy with Terraform
 cd terraform
-
 terraform init
-
-# Import pre-existing resources (created manually in steps 5)
-terraform import google_service_account.pipeline_sa \
-  "projects/YOUR_PROJECT/serviceAccounts/${SA_EMAIL}"
-terraform import google_secret_manager_secret.drive_sa_credentials \
-  "projects/YOUR_PROJECT/secrets/drive-sa-credentials"
-
-terraform apply -auto-approve
-cd ..
+terraform apply
 ```
 
-### Step 9 — Wire the Webhook URL
-
+**6. Set up webhook**
 ```bash
-# Get the deployed Cloud Run URL
-URL=$(gcloud run services describe drive-receiver \
-  --region=us-central1 --format="value(status.url)")
+URL=$(gcloud run services describe drive-receiver --region=us-central1 --format="value(status.url)")
+curl -X POST "${URL}/renew"  # Register Drive watch channel
+```
 
-# Patch the WEBHOOK_URL env var (needed for watch renewal)
-gcloud run services update drive-receiver \
-  --region=us-central1 \
-  --update-env-vars="WEBHOOK_URL=${URL}"
+</details>
 
-# Register the first Drive watch channel
+## How it Works
+
+### drive-receiver
+- Receives webhook notifications from Google Drive when file changes
+- Downloads the ZIP file (streaming, handles large files)
+- Uploads to Cloud Storage
+- Credentials fetched from Secret Manager (no keys on disk)
+
+### parquet-migrator
+- Triggered by Cloud Storage events via Pub/Sub
+- Extracts SQLite database from ZIP
+- Converts all tables to Parquet format (DuckDB + ZSTD compression)
+- Loads into BigQuery with WRITE_TRUNCATE
+
+### Watch Renewal
+Cloud Scheduler runs every 45 minutes to renew the Drive watch channel (Drive expires them after ~1 hour despite longer TTL requests).
+
+## Grafana Setup
+
+1. Add BigQuery datasource in Grafana
+2. Upload the service account key (or create a separate read-only SA)
+3. Set default project and dataset
+
+Example queries:
+```sql
+-- Daily steps
+SELECT DATE(TIMESTAMP_MILLIS(start_time)) as date, SUM(count) as steps
+FROM `project.health_analytics.steps_record_table`
+GROUP BY date
+ORDER BY date
+
+-- Sleep duration by night
+SELECT DATE(TIMESTAMP_MILLIS(start_time)) as night,
+  (end_time - start_time) / 3600000.0 as hours
+FROM `project.health_analytics.sleep_session_record_table`
+ORDER BY night
+```
+
+## Security
+
+- No service account keys stored in code
+- Credentials in Secret Manager only
+- `drive-receiver` is public (required for Drive webhooks)
+- `parquet-migrator` is private (OIDC-authenticated Pub/Sub only)
+- All data encrypted in transit and at rest
+
+## Cost Breakdown
+
+Everything runs on GCP free tier:
+
+| Service | Free Tier | Usage |
+|---------|-----------|-------|
+| Cloud Run | 2M requests/mo | ~30/mo |
+| Cloud Storage | 5 GB | ~200 MB |
+| BigQuery | 10 GB storage, 1 TB queries/mo | ~200 MB storage |
+| Pub/Sub | 10 GB/mo | ~30 MB |
+| Secret Manager | 6 secrets | 1 secret |
+
+**Total: $0/month**
+
+## Troubleshooting
+
+**Drive webhook not working?**
+```bash
+# Check watch channel status
+URL=$(gcloud run services describe drive-receiver --region=us-central1 --format="value(status.url)")
 curl -X POST "${URL}/renew"
 ```
 
-### Step 10 — Test End-to-End
-
+**Pub/Sub not triggering?**
 ```bash
-# Zip your local DB file
-python3 -c "
-import zipfile
-with zipfile.ZipFile('/tmp/test.zip', 'w', zipfile.ZIP_DEFLATED) as z:
-    z.write('health_connect_export.db', 'health_connect_export.db')
-"
+gcloud pubsub subscriptions pull parquet-migrator-gcs-trigger --limit=5
+```
 
-# Upload to GCS raw bucket (triggers the full pipeline!)
-gcloud storage cp /tmp/test.zip gs://YOUR_PROJECT-health-raw-zip/health_connect_export.zip
-
-# Wait ~60 seconds, then check BigQuery
+**BigQuery tables missing?**
+```bash
 bq ls YOUR_PROJECT:health_analytics
 ```
 
----
+## Known Issues
 
-## 📁 Directory Structure
+- Drive watch channels expire after ~1 hour (auto-renewed every 45 min by Cloud Scheduler)
+- Full table rewrite on every run (no incremental updates yet)
+- Sleep data coverage depends on wearable device compatibility
 
-```
-health-connect-pipeline/
-│
-├── 📄 README.md                    ← You are here
-├── 🔧 setup.sh                     ← One-command automated setup
-│
-├── terraform/                      ← Infrastructure as Code (IaC)
-│   ├── main.tf                     ← GCP provider + APIs + Secret Manager
-│   ├── storage.tf                  ← GCS buckets (raw + processed)
-│   ├── pubsub.tf                   ← Pub/Sub topic + GCS notifications
-│   ├── compute.tf                  ← Cloud Run services + IAM + Scheduler
-│   ├── variables.tf                ← Input variable declarations
-│   └── terraform.tfvars            ← Your actual values (gitignored!)
-│
-├── services/
-│   │
-│   ├── drive-receiver/             ← Ingestion Microservice
-│   │   ├── main.py                 ← Flask app (webhook + renew endpoints)
-│   │   ├── requirements.txt        ← Python dependencies
-│   │   └── Dockerfile              ← Container definition
-│   │
-│   └── parquet-migrator/           ← Processing Microservice
-│       ├── main.py                 ← Flask app (Pub/Sub event handler)
-│       ├── migrate_health.py       ← Core migration logic (SQLite→Parquet→BQ)
-│       ├── requirements.txt        ← Python dependencies
-│       └── Dockerfile              ← Container definition
-│
-├── health_parquet/                 ← Local Parquet exports (gitignored)
-├── health_connect_export.db        ← Local SQLite DB (gitignored)
-└── health_analytics.duckdb         ← Local DuckDB file (gitignored)
-```
+## Future Ideas
 
-> ⚠️ **Add to `.gitignore`**:
-> ```
-> *.db
-> *.duckdb
-> health_parquet/
-> terraform/terraform.tfvars
-> terraform/.terraform/
-> terraform/*.tfstate*
-> *.json
-> ```
+- Incremental BigQuery loads (only new records)
+- Multiple user support (separate Drive files)
+- Anomaly detection alerts (unusual heart rate, poor sleep)
+- ML-based health insights
+
+## License
+
+MIT - feel free to fork and modify
 
 ---
 
-## 🔍 Services Deep Dive
-
-### drive-receiver
-
-**Purpose**: Receives Google Drive push notifications when your health ZIP file is updated.
-
-**Endpoints**:
-| Endpoint | Method | Description |
-|---|---|---|
-| `/webhook` | POST | Receives Drive change notifications |
-| `/renew` | POST | Registers/renews the Drive watch channel |
-| `/health` | GET | Health check (returns `{"status":"healthy"}`) |
-
-**How the webhook flow works**:
-1. Google Drive calls `POST /webhook` with special headers:
-   - `X-Goog-Resource-State: update` → file was modified
-   - `X-Goog-Resource-State: sync` → channel just registered (safe to ignore)
-2. Service downloads the ZIP from Drive using streaming (8 MB chunks)
-3. Uploads ZIP to `gs://PROJECT-health-raw-zip/`
-4. Returns 200 OK within Drive's timeout window
-
-**Security**: Drive SA credentials are fetched from Secret Manager at startup and cached in memory. GCS upload uses ADC (no credentials needed — Cloud Run's attached SA is used automatically).
-
-### parquet-migrator
-
-**Purpose**: Converts the raw SQLite database to columnar Parquet format and loads it into BigQuery.
-
-**Trigger**: Pub/Sub push subscription fires on every `OBJECT_FINALIZE` event from the GCS raw bucket.
-
-**Processing steps**:
-1. Decodes base64 Pub/Sub message → extracts GCS bucket + object name
-2. Downloads ZIP from GCS to `/tmp/health_processing/`
-3. Extracts `health_connect_export.db` from ZIP
-4. For each of 18 tables:
-   - Reads via DuckDB's `sqlite_scan()` extension
-   - Projects only meaningful columns (strips internal metadata)
-   - Exports to `TABLE.parquet` with ZSTD compression
-5. Uploads all Parquet files to `gs://PROJECT-health-processed-parquet/parquet/TABLE/`
-6. Calls BigQuery load jobs (WRITE_TRUNCATE → full refresh each time)
-7. Cleans up `/tmp/` directory
-
-**Why DuckDB?** DuckDB can query SQLite databases directly via its `sqlite_scan` extension — no SQLite3 Python calls needed. It also handles Parquet export and ZSTD compression natively.
-
----
-
-## 📊 Grafana Dashboard Setup
-
-### Connect BigQuery as a Data Source
-
-1. Log in to [grafana.com](https://grafana.com) (free account)
-2. Go to **Connections** → **Add new connection** → search **BigQuery**
-3. Install the **Google BigQuery** plugin
-4. Create a new data source:
-   - **Authentication**: Use GCP service account JSON (Upload `grafana-key.json` generated by `setup.sh`)
-   - **Project**: `your-gcp-project-id`
-   - **Default Dataset**: `health_analytics`
-
-> **Note**: The `setup.sh` script automatically creates a `grafana-reader` service account with `roles/bigquery.dataViewer` and `roles/bigquery.jobUser` and exports the key to `grafana-key.json` for you.
-
-### 🌐 GCP Observability (Monitor your Cloud Resources)
-
-Because the `setup.sh` script also grants the `grafana-reader` service account `roles/monitoring.viewer` and `roles/compute.viewer`, you can use the exact same JSON key to monitor your entire GCP project in Grafana!
-
-1. Go to **Connections** → **Add new connection** → search **Google Cloud Monitoring**.
-2. Under Authentication, select **JWT File** and upload the exact same `grafana-key.json`.
-3. Set Default Project to your GCP project ID and click **Save & Test**.
-4. Click on the **Dashboards** tab inside the connection settings and click **Import** to instantly get pre-built observability dashboards for:
-   - **Google Cloud / Cloud Run**
-   - **Google Cloud / Cloud Storage**
-   - **Google Cloud / BigQuery**
-   - **Google Cloud / PubSub**
-
-### Example BigQuery Queries for Panels
-
-**Daily Steps (Time Series)**:
-```sql
-SELECT
-  DATE(TIMESTAMP_MILLIS(start_time)) AS date,
-  SUM(count) AS total_steps
-FROM `PROJECT.health_analytics.steps_record_table`
-GROUP BY date
-ORDER BY date
-```
-
-**Sleep Stage Distribution (Pie Chart)**:
-```sql
-SELECT
-  CASE stage_type
-    WHEN 1 THEN 'Awake'
-    WHEN 4 THEN 'Light Sleep'
-    WHEN 5 THEN 'Deep Sleep'
-    WHEN 6 THEN 'REM Sleep'
-  END AS stage,
-  SUM((stage_end_time - stage_start_time) / 60000.0) AS duration_minutes
-FROM `PROJECT.health_analytics.sleep_stages_table`
-GROUP BY stage_type
-```
-
-**Resting Heart Rate Trend (Time Series)**:
-```sql
-SELECT
-  TIMESTAMP_MILLIS(time) AS recorded_at,
-  beats_per_minute AS resting_bpm
-FROM `PROJECT.health_analytics.resting_heart_rate_record_table`
-ORDER BY time
-```
-
-**Heart Rate Zones During Exercise**:
-```sql
-SELECT
-  CASE
-    WHEN beats_per_minute < 111 THEN '1. Warm Up'
-    WHEN beats_per_minute < 130 THEN '2. Fat Burn'
-    WHEN beats_per_minute < 148 THEN '3. Aerobic'
-    WHEN beats_per_minute < 166 THEN '4. Anaerobic'
-    ELSE '5. Peak'
-  END AS zone,
-  COUNT(*) AS samples
-FROM `PROJECT.health_analytics.heart_rate_record_series_table`
-GROUP BY zone
-ORDER BY zone
-```
-
-**Sleep Duration by Day of Week**:
-```sql
-SELECT
-  FORMAT_DATE('%A', DATE(TIMESTAMP_MILLIS(start_time))) AS day_of_week,
-  AVG((end_time - start_time) / 3600000.0) AS avg_sleep_hours
-FROM `PROJECT.health_analytics.sleep_session_record_table`
-GROUP BY EXTRACT(DAYOFWEEK FROM TIMESTAMP_MILLIS(start_time)), day_of_week
-ORDER BY EXTRACT(DAYOFWEEK FROM TIMESTAMP_MILLIS(start_time))
-```
-
-## 🛡️ Reliability & Operations
-
-The pipeline is hardened with several reliability features:
-
-### Dead Letter Queue (DLQ)
-If `parquet-migrator` fails to process a message after **5 retries** (with exponential backoff from 10s to 600s), the message is automatically forwarded to a dead letter topic (`health-pipeline-dead-letter`) instead of being silently dropped.
-
-```bash
-# Check for failed messages in the dead letter subscription
-gcloud pubsub subscriptions pull health-pipeline-dead-letter-sub --limit=5
-```
-
-### Data Freshness Monitoring
-The `parquet-migrator` service exposes a `/status` endpoint that queries BigQuery and reports how old your latest data is:
-
-```bash
-# Check data freshness (returns 'fresh' if <72h, 'stale' if >72h)
-curl -s YOUR_MIGRATOR_URL/status | python3 -m json.tool
-```
-
-### Pipeline Failure Alerting (Grafana)
-To get notified when the pipeline breaks:
-1. In Grafana, go to **Alerting** → **Alert rules** → **New alert rule**
-2. Query: Cloud Run `request_count` metric filtered by `response_code_class = 5xx`
-3. Condition: Count > 0 in the last 1 hour
-4. Notification: Email or Slack/Discord webhook
-
-### Budget Alert (GCP Console)
-To protect against unexpected charges:
-1. Go to **Billing** → **Budgets & alerts** → **Create budget**
-2. Set amount to **$1.00**
-3. Set alert thresholds at 50%, 90%, 100%
-4. Enable email notifications
-
-### Resource Limits
-Both Cloud Run services have explicit limits (`512Mi` memory, `1 CPU`) to prevent runaway resource consumption while staying within the free tier.
-
----
-
-## 🔐 Security Architecture
-
-This project was built with **zero-trust principles** for handling personal health data:
-
-| Security Control | Implementation |
-|---|---|
-| **No JSON keys on disk** | SA key created → immediately stored in Secret Manager → local file deleted |
-| **No secrets in env vars** | `DRIVE_SECRET_NAME` env var holds only the *name* of the secret, not the value |
-| **Runtime secret fetch** | drive-receiver fetches SA credentials from Secret Manager at startup |
-| **ADC for GCP services** | Cloud Run's attached SA provides automatic credentials for GCS/BigQuery/Pub/Sub — no keys needed |
-| **Private parquet-migrator** | Only accepts requests authenticated with OIDC tokens from Pub/Sub (returns 403 to everyone else) |
-| **Public drive-receiver** | Must be public to receive Google Drive webhooks (Drive cannot authenticate to private endpoints) |
-| **Least-privilege IAM** | Each role granted is the minimum required for the specific operation |
-| **Drive file sharing** | File shared only with pipeline SA (Viewer access), not made public |
-| **TLS everywhere** | All Cloud Run endpoints are HTTPS-only by default |
-
----
-
-## ⚠️ Known Limitations
-
-### Google Drive Webhook Expiration
-- **Root cause discovered**: Despite requesting a 6-day TTL, Google Drive only grants **~1 hour** watch channel expiry in practice
-- **Solution**: Cloud Scheduler renews the channel **every 45 minutes** — well before expiry
-- **Previous bug**: Scheduler was set to every 6 days, causing the channel to expire and the pipeline to go silent for days
-- **Manual fix if needed**: `curl -X POST https://drive-receiver-ufrktnv6fq-uc.a.run.app/renew`
-
-### Samsung Health Sleep Score
-- **Limitation**: Samsung's sleep score (0-100) and "Fair/Good" rating is a proprietary algorithm and is **not exported** by Health Connect
-- **Workaround**: We can approximate it using sleep duration + stage percentages + regularity metrics
-
-### Sleep Regularity Score
-- **Limitation**: Health Connect doesn't export a sleep regularity percentage directly
-- **Workaround**: Compute it in BigQuery using standard deviation of bedtime times over 30-day windows
-
-### Sparse Weight Data
-- **Limitation**: Weight entries are only recorded when you manually log them (15% coverage over 9 months)
-- **No workaround** — this is a data collection limitation
-
-### vo2_max_record_table Empty
-- **Limitation**: VO2 Max data requires a VO2 Max-capable wearable. The table exists but has no rows
-- **Note**: Added to migration script for forward compatibility
-
-### NAP Detection
-- **Limitation**: Health Connect doesn't have a separate "nap" table
-- **Workaround**: Short sleep sessions (<2 hours) during daytime hours (10:00–18:00) can be classified as naps in BigQuery
-
-### BigQuery WRITE_TRUNCATE on Every Run
-- **Limitation**: Each pipeline run completely overwrites all BigQuery tables (no incremental append)
-- **Reason**: Health Connect re-exports the entire history every time, so deduplication on append would be complex
-- **Impact**: BigQuery load jobs count against the free 1TB query quota. At current data sizes (~200MB), this is well within limits
-- **Future improvement**: Implement incremental loads using `start_time` watermarks
-
-### Cloud Run Processing Timeout
-- **Limit**: parquet-migrator gunicorn timeout is **120 seconds** for DuckDB processing
-- **Current DB size**: ~25 MB (as of Aug 2026) — well within limits, processes in ~2 minutes
-- **Resource limits**: Both services capped at `512Mi` memory and `1 CPU` to stay within free tier
-- **Future improvement**: Switch to Cloud Run Jobs for very large databases (>500 MB)
-
----
-
-## 🔧 Troubleshooting
-
-### Drive watch channel not receiving updates
-
-```bash
-# Check the current watch channel
-curl -X POST YOUR_WEBHOOK_URL/renew | python3 -m json.tool
-
-# Check drive-receiver logs for webhook events
-gcloud run services logs read drive-receiver --region=us-central1 --limit=50
-```
-
-### parquet-migrator not triggered after GCS upload
-
-```bash
-# Check if Pub/Sub subscription is delivering
-gcloud pubsub subscriptions describe parquet-migrator-gcs-trigger --project=YOUR_PROJECT
-
-# Check migrator logs
-gcloud run services logs read parquet-migrator --region=us-central1 --limit=50
-
-# Check dead letter queue for failed messages (after 5 retries)
-gcloud pubsub subscriptions pull health-pipeline-dead-letter-sub --project=YOUR_PROJECT --limit=5
-```
-
-### BigQuery tables not loading
-
-```bash
-# Check BigQuery recent load jobs
-bq ls -j --project_id=YOUR_PROJECT --max_results=10
-
-# Query a table directly
-bq query --use_legacy_sql=false \
-  'SELECT COUNT(*) FROM `YOUR_PROJECT.health_analytics.steps_record_table`'
-```
-
-### Terraform state conflicts
-
-```bash
-# List what's in state
-terraform state list
-
-# If a resource was created outside Terraform, import it
-terraform import RESOURCE_TYPE.NAME RESOURCE_ID
-
-# If state is corrupt, view and remove specific resources
-terraform state rm RESOURCE_TYPE.NAME
-```
-
-### Docker push authentication fails
-
-```bash
-# Re-authenticate Docker with GCR
-gcloud auth configure-docker gcr.io --quiet
-
-# Verify Docker credentials
-docker pull gcr.io/YOUR_PROJECT/drive-receiver:latest
-```
-
----
-
-## 🚀 Future Improvements
-
-- [ ] **Incremental BigQuery loads** — append only new records using watermarks
-- [ ] **LLM Health Insights** — scheduled Cloud Run job exports weekly summaries to Gemini for personalized health recommendations
-- [x] ~~**Grafana dashboard export** — share pre-built dashboard JSON~~ ✅ Done
-- [ ] **Sleep score computation** — BigQuery view that approximates Samsung's sleep score algorithm
-- [ ] **Alert policies** — Cloud Monitoring alerts when RHR spikes >5 BPM above 7-day baseline
-- [ ] **Multi-user support** — parameterize by Drive file ID for family health tracking
-- [x] ~~**Terraform Cloud backend** — remote state storage for team environments~~ ✅ Done (GCS backend)
-
----
-
-## 🤝 Contributing
-
-Pull requests welcome! For major changes, open an issue first to discuss.
-
-1. Fork the repo
-2. Create a feature branch: `git checkout -b feature/my-feature`
-3. Commit with conventional commits: `git commit -m 'feat: add sleep score approximation'`
-4. Push: `git push origin feature/my-feature`
-5. Open a Pull Request
-
----
-
-## 📄 License
-
-MIT License — see [LICENSE](LICENSE) file.
-
----
-
-## 🙏 Acknowledgements
-
-- [DuckDB](https://duckdb.org/) — for making SQLite → Parquet conversion trivially easy
-- [Google Health Connect](https://developer.android.com/health-and-fitness/guides/health-connect) — for open health data export
-- [Grafana](https://grafana.com) — for the beautiful free cloud dashboards
-- [Terraform Google Provider](https://registry.terraform.io/providers/hashicorp/google) — for clean GCP IaC
-
----
-
-<div align="center">
-  Made with ❤️ for personal health analytics · <a href="https://github.com/YOUR_USERNAME/health-connect-pipeline">GitHub</a>
-</div>
+Built for personal health tracking. Not affiliated with Google or Health Connect.
