@@ -77,6 +77,7 @@ resource "google_cloud_run_v2_service" "drive_receiver" {
   lifecycle {
     ignore_changes = [
       template[0].containers[0].image,
+      template[0].containers[0].env,
       client,
       client_version
     ]
@@ -175,11 +176,13 @@ resource "google_cloud_run_v2_service_iam_member" "migrator_invoker" {
   member   = "serviceAccount:${google_service_account.pipeline_sa.email}"
 }
 
-# Cloud Scheduler Watch Renewal Job (triggers every 6 days)
+# Cloud Scheduler Watch Renewal Job (triggers every 45 minutes)
+# Google Drive only grants ~1 hour watch expiry despite requesting 6 days,
+# so we must renew frequently to prevent gaps in file change detection.
 resource "google_cloud_scheduler_job" "watch_renewal" {
   name             = "gdrive-watch-renewal"
-  description      = "Trigger drive-receiver to renew Google Drive files.watch channel"
-  schedule         = "0 0 */6 * *"
+  description      = "Renew Google Drive watch channel every 45 min (Drive grants ~1h expiry)"
+  schedule         = "*/45 * * * *"
   time_zone        = "Etc/UTC"
   attempt_deadline = "320s"
 
