@@ -24,7 +24,7 @@ PROJECT_ID="your-gcp-project-id"
 
 # The Google Drive FILE ID of your health_connect_export.zip
 # From the file URL: drive.google.com/file/d/THIS_PART/view
-DRIVE_FILE_ID="1gLWNAhBW5OLgLaNzTXKJHJXfCJZlFKnF"
+DRIVE_FILE_ID="YOUR_DRIVE_FILE_ID"
 
 # GCP region (us-central1 has the broadest free-tier coverage)
 REGION="us-central1"
