@@ -61,61 +61,123 @@ Android's **Health Connect** app lets you export all your health data (steps, he
 
 ## 🗺️ Architecture Overview
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                        YOUR ANDROID PHONE                               │
-│  Health Connect App → Export → health_connect_export.zip → Google Drive │
-└───────────────────────────────────┬─────────────────────────────────────┘
-                                    │ File updated
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         GOOGLE DRIVE API                                │
-│  files.watch() channel → HTTP POST notification (every file change)     │
-└───────────────────────────────────┬─────────────────────────────────────┘
-                                    │ Webhook POST /webhook
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│           CLOUD RUN: drive-receiver  (Python/Flask)                     │
-│  • Validates Drive webhook headers                                      │
-│  • Downloads updated ZIP from Drive (streaming, 8MB chunks)             │
-│  • Uploads ZIP to GCS Raw Bucket                                        │
-│  • Credentials fetched from Secret Manager (no JSON files)              │
-└───────────────────────────────────┬─────────────────────────────────────┘
-                                    │ gs://PROJECT-health-raw-zip/
-                                    │ OBJECT_FINALIZE event
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│                    CLOUD PUB/SUB TOPIC                                  │
-│  GCS notification → Pub/Sub → Push subscription to parquet-migrator     │
-└───────────────────────────────────┬─────────────────────────────────────┘
-                                    │ OIDC-authenticated POST
-                                    ▼
-┌─────────────────────────────────────────────────────────────────────────┐
-│          CLOUD RUN: parquet-migrator  (Python/Flask/DuckDB)             │
-│  • Downloads ZIP from GCS                                               │
-│  • Extracts health_connect_export.db (SQLite)                           │
-│  • Converts 18 tables → Parquet (ZSTD compressed) via DuckDB           │
-│  • Uploads Parquet files to GCS Processed Bucket                        │
-│  • Loads all tables into BigQuery (WRITE_TRUNCATE)                      │
-└──────────────────────┬────────────────────────────┬────────────────────┘
-                       │                            │
-                       ▼                            ▼
-        gs://PROJECT-health-              BigQuery Dataset:
-        processed-parquet/                health_analytics
-        parquet/TABLE/TABLE.parquet       (18 tables)
-                                                    │
-                                                    ▼
-                                       ┌────────────────────┐
-                                       │   GRAFANA CLOUD    │
-                                       │  BigQuery Plugin   │
-                                       │  Dashboards 📊     │
-                                       └────────────────────┘
+<div align="center">
 
-── AUTOMATED WATCH RENEWAL ──────────────────────────────────────────────
-  Cloud Scheduler (every 45 min) → POST /renew → drive-receiver
-  → files.watch() with new UUID → new watch channel (~1h expiry)
-  (Drive grants ~1h expiry regardless of requested TTL — renewed every 45 min)
+```mermaid
+%%{init: {'theme':'base', 'themeVariables': { 'primaryColor':'#4285f4','primaryTextColor':'#fff','primaryBorderColor':'#1a73e8','lineColor':'#34a853','secondaryColor':'#fbbc04','tertiaryColor':'#ea4335','fontSize':'16px'}}}%%
+
+graph TB
+    subgraph Phone["📱 YOUR ANDROID PHONE"]
+        HC[Health Connect App]
+        Export[Export Data]
+        HC -->|Export| Export
+    end
+
+    subgraph Drive["☁️ GOOGLE DRIVE"]
+        ZipFile["health_connect_export.zip<br/>📦 SQLite Database"]
+        Watch["files.watch API<br/>🔔 Change Detection"]
+        Export -->|Upload| ZipFile
+        ZipFile -->|File Updated| Watch
+    end
+
+    subgraph CloudRun1["⚡ CLOUD RUN: drive-receiver"]
+        Webhook["🔗 Webhook Endpoint<br/>/webhook"]
+        Download["⬇️ Download ZIP<br/>Streaming (8MB chunks)"]
+        Validate["✅ Validate Headers<br/>Security Check"]
+        Watch -->|HTTP POST| Webhook
+        Webhook --> Validate
+        Validate --> Download
+    end
+
+    subgraph SecretMgr["🔐 SECRET MANAGER"]
+        Creds["🔑 Service Account Key<br/>drive-sa-credentials"]
+        Download -.->|Fetch Credentials| Creds
+    end
+
+    subgraph GCS1["📦 CLOUD STORAGE"]
+        RawBucket["gs://health-raw-zip/<br/>🗄️ Raw ZIP Storage"]
+        Download -->|Upload| RawBucket
+    end
+
+    subgraph PubSub["📢 CLOUD PUB/SUB"]
+        Topic["health-pipeline-topic<br/>📨 Event Stream"]
+        Subscription["Push Subscription<br/>🔔 OIDC Auth"]
+        RawBucket -->|OBJECT_FINALIZE| Topic
+        Topic --> Subscription
+    end
+
+    subgraph CloudRun2["⚡ CLOUD RUN: parquet-migrator"]
+        Receiver["📥 Event Handler<br/>Flask + DuckDB"]
+        Extract["📂 Extract SQLite<br/>health_connect_export.db"]
+        Convert["🔄 Convert to Parquet<br/>18 Tables → ZSTD Compressed"]
+        Subscription -->|Authenticated POST| Receiver
+        Receiver --> Extract
+        Extract --> Convert
+    end
+
+    subgraph GCS2["📦 CLOUD STORAGE"]
+        ProcessedBucket["gs://health-processed-parquet/<br/>💾 Parquet Storage"]
+        Convert -->|Upload| ProcessedBucket
+    end
+
+    subgraph BigQuery["📊 BIGQUERY"]
+        Dataset["health_analytics Dataset<br/>🗂️ 18 Tables"]
+        Tables["✨ Tables:<br/>• steps_record<br/>• heart_rate_series<br/>• sleep_sessions<br/>• exercise_sessions<br/>+ 14 more"]
+        Convert -->|Load Data<br/>WRITE_TRUNCATE| Dataset
+        Dataset --> Tables
+    end
+
+    subgraph Grafana["📈 GRAFANA CLOUD"]
+        Plugin["BigQuery Plugin<br/>🔌 Data Source"]
+        Dashboards["📊 Dashboards<br/>Activity • Sleep • HR • Recovery"]
+        Tables -->|SQL Queries| Plugin
+        Plugin --> Dashboards
+    end
+
+    subgraph Scheduler["⏰ CLOUD SCHEDULER"]
+        Cron["Cron Job<br/>⏱️ Every 45 minutes"]
+        Renew["POST /renew<br/>🔄 Refresh Watch Channel"]
+        Cron -->|Trigger| Renew
+        Renew -.->|files.watch API| Watch
+    end
+
+    style Phone fill:#34a853,stroke:#137333,stroke-width:3px,color:#fff
+    style Drive fill:#4285f4,stroke:#1a73e8,stroke-width:3px,color:#fff
+    style CloudRun1 fill:#ea4335,stroke:#c5221f,stroke-width:3px,color:#fff
+    style CloudRun2 fill:#ea4335,stroke:#c5221f,stroke-width:3px,color:#fff
+    style SecretMgr fill:#fbbc04,stroke:#f29900,stroke-width:3px,color:#333
+    style GCS1 fill:#0f9d58,stroke:#0b8043,stroke-width:3px,color:#fff
+    style GCS2 fill:#0f9d58,stroke:#0b8043,stroke-width:3px,color:#fff
+    style PubSub fill:#669df6,stroke:#4285f4,stroke-width:3px,color:#fff
+    style BigQuery fill:#4285f4,stroke:#1a73e8,stroke-width:3px,color:#fff
+    style Grafana fill:#f46800,stroke:#d14900,stroke-width:3px,color:#fff
+    style Scheduler fill:#fbbc04,stroke:#f29900,stroke-width:3px,color:#333
 ```
+
+</div>
+
+### 🔄 Event Flow Summary
+
+| Step | Service | Action | Trigger |
+|------|---------|--------|---------|
+| 1️⃣ | **Android Phone** | Export health data to Google Drive | Manual (one tap) |
+| 2️⃣ | **Google Drive** | Detect file change, fire webhook | File updated event |
+| 3️⃣ | **drive-receiver** | Download ZIP, upload to GCS | Webhook POST |
+| 4️⃣ | **Cloud Storage** | Store raw ZIP, trigger Pub/Sub | OBJECT_FINALIZE |
+| 5️⃣ | **Pub/Sub** | Route event to processor | Topic subscription |
+| 6️⃣ | **parquet-migrator** | Extract → Convert → Load | Push subscription |
+| 7️⃣ | **BigQuery** | Store 18 health tables | Load job complete |
+| 8️⃣ | **Grafana** | Query & visualize data | User access |
+| 🔁 | **Cloud Scheduler** | Renew Drive watch (every 45 min) | Cron schedule |
+
+### ⚡ Key Features
+
+- **🚀 Fully Serverless** - No servers to manage, scales automatically
+- **💰 Always Free** - Runs on GCP Free Tier ($0/month)
+- **🔐 Secure by Design** - No JSON keys on disk, Secret Manager for credentials
+- **📊 18 Health Tables** - Steps, HR, Sleep, Workouts, GPS routes, and more
+- **🔄 Auto-Sync** - Updates within minutes of Drive file change
+- **📈 Beautiful Dashboards** - Grafana Cloud with BigQuery datasource
 
 ---
 
