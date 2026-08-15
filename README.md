@@ -112,9 +112,9 @@ Android's **Health Connect** app lets you export all your health data (steps, he
                                        └────────────────────┘
 
 ── AUTOMATED WATCH RENEWAL ──────────────────────────────────────────────
-  Cloud Scheduler (every 6 days) → POST /renew → drive-receiver
-  → files.watch() with new UUID → new 6-day watch channel
-  (Drive webhooks expire after max 7 days — this keeps them alive forever)
+  Cloud Scheduler (every 45 min) → POST /renew → drive-receiver
+  → files.watch() with new UUID → new watch channel (~1h expiry)
+  (Drive grants ~1h expiry regardless of requested TTL — renewed every 45 min)
 ```
 
 ---
@@ -615,10 +615,10 @@ This project was built with **zero-trust principles** for handling personal heal
 ## ⚠️ Known Limitations
 
 ### Google Drive Webhook Expiration
-- **Limitation**: Drive push notification channels expire after **maximum 7 days**
-- **Solution**: Cloud Scheduler runs every 6 days to renew the channel automatically
-- **Risk**: If the scheduler fails and the channel expires, you'll miss updates until manually renewed
-- **Manual fix**: `curl -X POST YOUR_WEBHOOK_URL/renew`
+- **Root cause discovered**: Despite requesting a 6-day TTL, Google Drive only grants **~1 hour** watch channel expiry in practice
+- **Solution**: Cloud Scheduler renews the channel **every 45 minutes** — well before expiry
+- **Previous bug**: Scheduler was set to every 6 days, causing the channel to expire and the pipeline to go silent for days
+- **Manual fix if needed**: `curl -X POST https://drive-receiver-ufrktnv6fq-uc.a.run.app/renew`
 
 ### Samsung Health Sleep Score
 - **Limitation**: Samsung's sleep score (0-100) and "Fair/Good" rating is a proprietary algorithm and is **not exported** by Health Connect
@@ -646,10 +646,11 @@ This project was built with **zero-trust principles** for handling personal heal
 - **Impact**: BigQuery load jobs count against the free 1TB query quota. At current data sizes (~200MB), this is well within limits
 - **Future improvement**: Implement incremental loads using `start_time` watermarks
 
-### Cloud Run Cold Starts
-- **Limitation**: parquet-migrator has a 60-second timeout on DuckDB processing. Very large databases (>500 MB) may timeout
-- **Current DB size**: ~46 MB — well within limits
-- **Future improvement**: Increase Cloud Run timeout or switch to Cloud Run Jobs
+### Cloud Run Processing Timeout
+- **Limit**: parquet-migrator gunicorn timeout is **120 seconds** for DuckDB processing
+- **Current DB size**: ~25 MB (as of Aug 2026) — well within limits, processes in ~2 minutes
+- **Resource limits**: Both services capped at `512Mi` memory and `1 CPU` to stay within free tier
+- **Future improvement**: Switch to Cloud Run Jobs for very large databases (>500 MB)
 
 ---
 
@@ -669,13 +670,13 @@ gcloud run services logs read drive-receiver --region=us-central1 --limit=50
 
 ```bash
 # Check if Pub/Sub subscription is delivering
-gcloud pubsub subscriptions describe parquet-migrator-gcs-trigger
+gcloud pubsub subscriptions describe parquet-migrator-gcs-trigger --project=lazybot7
 
 # Check migrator logs
 gcloud run services logs read parquet-migrator --region=us-central1 --limit=50
 
-# Check Pub/Sub dead-letter / undelivered messages
-gcloud pubsub subscriptions pull parquet-migrator-gcs-trigger --limit=5
+# Check dead letter queue for failed messages (after 5 retries)
+gcloud pubsub subscriptions pull health-pipeline-dead-letter-sub --project=lazybot7 --limit=5
 ```
 
 ### BigQuery tables not loading
