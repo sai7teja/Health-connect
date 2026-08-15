@@ -670,13 +670,13 @@ gcloud run services logs read drive-receiver --region=us-central1 --limit=50
 
 ```bash
 # Check if Pub/Sub subscription is delivering
-gcloud pubsub subscriptions describe parquet-migrator-gcs-trigger --project=lazybot7
+gcloud pubsub subscriptions describe parquet-migrator-gcs-trigger --project=YOUR_PROJECT
 
 # Check migrator logs
 gcloud run services logs read parquet-migrator --region=us-central1 --limit=50
 
 # Check dead letter queue for failed messages (after 5 retries)
-gcloud pubsub subscriptions pull health-pipeline-dead-letter-sub --project=lazybot7 --limit=5
+gcloud pubsub subscriptions pull health-pipeline-dead-letter-sub --project=YOUR_PROJECT --limit=5
 ```
 
 ### BigQuery tables not loading
