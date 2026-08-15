@@ -18,7 +18,7 @@ Added IST timezone conversion (+5.5 hours = 19800 seconds) to all timestamp oper
 SELECT
   TIMESTAMP_TRUNC(TIMESTAMP_MILLIS(start_time), DAY) AS time,
   SUM(count) AS steps
-FROM `lazybot7.health_analytics.steps_record_table`
+FROM `YOUR_PROJECT.health_analytics.steps_record_table`
 GROUP BY 1
 ```
 
@@ -30,7 +30,7 @@ SELECT
     DAY
   ) AS time,
   SUM(count) AS steps
-FROM `lazybot7.health_analytics.steps_record_table`
+FROM `YOUR_PROJECT.health_analytics.steps_record_table`
 GROUP BY 1
 ```
 
@@ -75,14 +75,14 @@ GROUP BY 1
 ## Dashboard Details
 - **Dashboard UID**: `health-analytics-main`
 - **Dashboard Name**: Android Health Connect Analytics
-- **Grafana URL**: https://sai7teja.grafana.net/d/health-analytics-main
+- **Grafana URL**: https://YOUR_ORG.grafana.net/d/health-analytics-main
 - **Version**: 8 (updated on 2026-08-15)
 - **Status**: ✅ Successfully deployed
 
 ## Verification
 
 To verify the fix is working:
-1. Open the dashboard: https://sai7teja.grafana.net/d/health-analytics-main
+1. Open the dashboard: https://YOUR_ORG.grafana.net/d/health-analytics-main
 2. Check any daily aggregation panel (e.g., "Daily Steps")
 3. Compare data points - they should now align with IST dates
 4. A sleep session starting at 11:30 PM IST should now count toward that IST day, not the next day
