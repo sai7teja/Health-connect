@@ -1,16 +1,17 @@
-# Health Connect → BigQuery Pipeline
+# Health Connect → BigQuery Pipeline & AI Assistant
 
-Automatically sync your Android Health Connect data to BigQuery for analysis and visualization. Built with GCP serverless services, runs entirely on the free tier.
+A serverless pipeline that automatically syncs your Android Health Connect data to BigQuery for analysis, plus a personal AI health assistant to chat with your data. The entire setup runs on the GCP and Groq free tiers, so it won't cost you a dime.
 
 ## What it does
 
-1. Export your health data from Android Health Connect to Google Drive
-2. Pipeline automatically detects the file change
-3. Extracts and converts SQLite data to Parquet format
-4. Loads 18 health tables into BigQuery
-5. Visualize in Grafana or query directly
+1. Exports your health data from Android Health Connect to Google Drive.
+2. Detects new file uploads and streams the SQLite data to Cloud Storage.
+3. Automatically extracts and converts the data to Parquet format.
+4. Loads 18 health tables into BigQuery.
+5. Lets you chat with your personal health data using an AI assistant (Llama 3.3 70B via Groq) that writes SQL on the fly.
+6. Lets you build dashboards in Grafana if you prefer visual charts.
 
-**Cost: $0/month** (stays within GCP free tier limits)
+**Cost: $0/month** (Stays well within GCP and Groq free tier limits)
 
 ## Architecture
 
@@ -60,6 +61,13 @@ graph TB
         Process --> Dataset
     end
 
+    subgraph AI["🤖 AI Assistant"]
+        ChatApp["health-chat (Cloud Run)"]
+        Groq["Groq API (Llama 3.3)"]
+        Dataset -.->|Query| ChatApp
+        ChatApp <-->|Text-to-SQL| Groq
+    end
+
     subgraph Graf["📈 Grafana"]
         Dash["Dashboards"]
         Dataset --> Dash
@@ -73,199 +81,100 @@ graph TB
     style PS fill:#669df6,stroke:#4285f4,stroke-width:2px,color:#fff
     style BQ fill:#4285f4,stroke:#1a73e8,stroke-width:2px,color:#fff
     style Graf fill:#f46800,stroke:#d14900,stroke-width:2px,color:#fff
+    style AI fill:#8e24aa,stroke:#6a1b9a,stroke-width:2px,color:#fff
 ```
 
 </div>
 
-**Flow:** Phone → Drive → Cloud Run → Storage → Pub/Sub → Cloud Run → BigQuery → Grafana
+**The Data Flow:** Phone → Drive → Cloud Run → Storage → Pub/Sub → Cloud Run → BigQuery → (AI Chatbot | Grafana)
 
-## Data Available
+## The Data We Collect
 
-All tables from Health Connect, including:
-- Steps, distance, calories (active & total)
-- Heart rate (continuous series + resting HR)
+It grabs all the tables from Health Connect, such as:
+- Steps, distance, and calories (both active & total)
+- Heart rate (continuous readings + resting heart rate)
 - Sleep sessions and stages (REM/Deep/Light/Awake)
-- Exercise sessions, routes (GPS), segments, laps
-- Body metrics (weight, height)
+- Exercise sessions, GPS routes, segments, and laps
+- Body metrics like weight
 
-Full list: `steps_record`, `heart_rate_series`, `sleep_sessions`, `sleep_stages`, `exercise_sessions`, `distance`, `elevation_gained`, and 11 more.
+There are 18 tables in total, giving you a very complete picture of your health.
 
-## Setup
+## Setting It Up
 
-### Prerequisites
-
-- GCP project with billing enabled (free tier is enough)
-- Google Drive account
-- Android phone with Health Connect
+### What you need
+- A Google Cloud Platform (GCP) project with billing enabled (don't worry, we won't leave the free tier).
+- A Google Drive account.
+- An Android phone running Health Connect.
+- A free API key from [Groq](https://console.groq.com) for the AI assistant.
 
 ### Quick Start
-
-1. **Clone and configure**
+1. **Clone the repo**
    ```bash
    git clone https://github.com/sai7teja/Health-connect.git
    cd Health-connect
    ```
-
-2. **Edit `setup.sh`** - Set your project ID and Drive file ID at the top
-
-3. **Run setup**
+2. **Edit `setup.sh`** - Add your GCP project ID and Drive file ID at the top of the file.
+3. **Run the script**
    ```bash
    chmod +x setup.sh
    ./setup.sh
    ```
+This script automates almost everything: enabling APIs, setting up service accounts, building Docker images, and running Terraform to provision the infrastructure.
 
-The script handles everything: API enablement, service accounts, Docker builds, Terraform deployment.
-
-### Manual Setup (if you prefer)
-
-<details>
-<summary>Click to expand step-by-step instructions</summary>
-
-**1. Enable APIs**
-```bash
-gcloud services enable run.googleapis.com storage.googleapis.com \
-  bigquery.googleapis.com pubsub.googleapis.com secretmanager.googleapis.com
-```
-
-**2. Create service account**
-```bash
-gcloud iam service-accounts create health-pipeline-sa
-SA_EMAIL="health-pipeline-sa@YOUR_PROJECT.iam.gserviceaccount.com"
-
-# Grant permissions
-for ROLE in roles/storage.objectAdmin roles/bigquery.admin roles/secretmanager.secretAccessor; do
-  gcloud projects add-iam-policy-binding YOUR_PROJECT \
-    --member="serviceAccount:${SA_EMAIL}" --role="${ROLE}"
-done
-```
-
-**3. Store credentials in Secret Manager**
-```bash
-gcloud iam service-accounts keys create /tmp/sa-key.json --iam-account="${SA_EMAIL}"
-gcloud secrets create drive-sa-credentials --data-file=/tmp/sa-key.json
-rm /tmp/sa-key.json  # Important: delete local copy
-```
-
-**4. Share Drive file with service account**
-- Open your health export ZIP in Drive
-- Share with `health-pipeline-sa@YOUR_PROJECT.iam.gserviceaccount.com` (Viewer)
-
-**5. Build and deploy**
-```bash
-# Build containers
-gcloud builds submit services/drive-receiver/ --tag gcr.io/YOUR_PROJECT/drive-receiver
-gcloud builds submit services/parquet-migrator/ --tag gcr.io/YOUR_PROJECT/parquet-migrator
-
-# Deploy with Terraform
-cd terraform
-terraform init
-terraform apply
-```
-
-**6. Set up webhook**
-```bash
-URL=$(gcloud run services describe drive-receiver --region=us-central1 --format="value(status.url)")
-curl -X POST "${URL}/renew"  # Register Drive watch channel
-```
-
-</details>
-
-## How it Works
+## How the Pieces Fit Together
 
 ### drive-receiver
-- Receives webhook notifications from Google Drive when file changes
-- Downloads the ZIP file (streaming, handles large files)
-- Uploads to Cloud Storage
-- Credentials fetched from Secret Manager (no keys on disk)
+A Cloud Run service that gets webhook notifications from Google Drive whenever your export file is updated. It downloads the ZIP file (handling streaming so we don't blow up memory) and puts it in Cloud Storage. Credentials live safely in Secret Manager.
 
 ### parquet-migrator
-- Triggered by Cloud Storage events via Pub/Sub
-- Extracts SQLite database from ZIP
-- Converts all tables to Parquet format (DuckDB + ZSTD compression)
-- Loads into BigQuery with WRITE_TRUNCATE
+When Cloud Storage sees a new ZIP, it sends a Pub/Sub message to trigger this service. It uses DuckDB to extract the SQLite database from the ZIP, converts the tables to Parquet (for speed and compression), and loads them into BigQuery.
+
+### health-chat (AI Assistant)
+A standalone web app running on Cloud Run. It takes your natural language questions (like "How much deep sleep did I get this week?"), uses the Groq API (Llama 3.3 70B) to write a SQL query, runs that query against BigQuery, and then explains the results back to you conversationally. 
 
 ### Watch Renewal
-Cloud Scheduler runs every 45 minutes to renew the Drive watch channel (Drive expires them after ~1 hour despite longer TTL requests).
-
-## Grafana Setup
-
-1. Add BigQuery datasource in Grafana
-2. Upload the service account key (or create a separate read-only SA)
-3. Set default project and dataset
-
-Example queries:
-```sql
--- Daily steps
-SELECT DATE(TIMESTAMP_MILLIS(start_time)) as date, SUM(count) as steps
-FROM `project.health_analytics.steps_record_table`
-GROUP BY date
-ORDER BY date
-
--- Sleep duration by night
-SELECT DATE(TIMESTAMP_MILLIS(start_time)) as night,
-  (end_time - start_time) / 3600000.0 as hours
-FROM `project.health_analytics.sleep_session_record_table`
-ORDER BY night
-```
+Google Drive watch channels technically expire after about an hour, even if you ask for longer. So, we have a Cloud Scheduler job that runs every 45 minutes to renew the watch channel so we never miss an update.
 
 ## Security
-
-- No service account keys stored in code
-- Credentials in Secret Manager only
-- `drive-receiver` is public (required for Drive webhooks)
-- `parquet-migrator` is private (OIDC-authenticated Pub/Sub only)
-- All data encrypted in transit and at rest
+- Absolutely no service account keys are committed to the codebase.
+- Everything sensitive lives in GCP Secret Manager.
+- While `drive-receiver` is public (needed for Drive webhooks), `parquet-migrator` is completely locked down and requires OIDC authentication via Pub/Sub.
+- Your health data stays encrypted in transit and at rest.
 
 ## Cost Breakdown
 
-Everything runs on GCP free tier:
+We keep everything in the free tier bounds. Here is how that works out:
 
-| Service | Free Tier | Usage |
-|---------|-----------|-------|
-| Cloud Run | 2M requests/mo | ~30/mo |
-| Cloud Storage | 5 GB | ~200 MB |
-| BigQuery | 10 GB storage, 1 TB queries/mo | ~200 MB storage |
-| Pub/Sub | 10 GB/mo | ~30 MB |
-| Secret Manager | 6 secrets | 1 secret |
+| Service | Free Tier Limit | Expected Usage |
+|---------|-----------------|----------------|
+| Cloud Run | 2M requests/month | ~50/month |
+| Cloud Storage | 5 GB storage | ~200 MB |
+| BigQuery | 10 GB storage, 1 TB queries/mo | ~25 MB storage, <1 GB queries |
+| Pub/Sub | 10 GB/month | ~30 MB |
+| Secret Manager | 6 secrets | 5 secrets |
+| Groq API | 14,400 requests/day | ~10-20/day |
 
-**Total: $0/month**
+**Total expected cost: $0.00/month**
 
 ## Troubleshooting
 
-**Drive webhook not working?**
+**Not getting Drive updates?**
+Manually renew the watch channel:
 ```bash
-# Check watch channel status
 URL=$(gcloud run services describe drive-receiver --region=us-central1 --format="value(status.url)")
 curl -X POST "${URL}/renew"
 ```
 
-**Pub/Sub not triggering?**
+**BigQuery tables empty?**
+Check if the migrator service got the message from Pub/Sub:
 ```bash
-gcloud pubsub subscriptions pull parquet-migrator-gcs-trigger --limit=5
+gcloud pubsub subscriptions pull parquet-migrator-gcs-trigger --limit=5 --project=YOUR_PROJECT
 ```
-
-**BigQuery tables missing?**
-```bash
-bq ls YOUR_PROJECT:health_analytics
-```
-
-## Known Issues
-
-- Drive watch channels expire after ~1 hour (auto-renewed every 45 min by Cloud Scheduler)
-- Full table rewrite on every run (no incremental updates yet)
-- Sleep data coverage depends on wearable device compatibility
 
 ## Future Ideas
-
-- Incremental BigQuery loads (only new records)
-- Multiple user support (separate Drive files)
-- Anomaly detection alerts (unusual heart rate, poor sleep)
-- ML-based health insights
+- Moving from full rewrites to incremental BigQuery loads.
+- Support for multiple users (tracking family health).
+- Setting up anomaly detection alerts (e.g., getting an email if your resting heart rate spikes).
 
 ## License
-
-MIT - feel free to fork and modify
-
----
-
-Built for personal health tracking. Not affiliated with Google or Health Connect.
+MIT - please feel free to fork, mess around, and modify it for your own needs.
