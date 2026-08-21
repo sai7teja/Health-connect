@@ -37,6 +37,7 @@ resource "google_cloud_run_v2_service" "drive_receiver" {
       image = "gcr.io/${var.project_id}/drive-receiver:latest"
 
       resources {
+        cpu_idle = true
         limits = {
           memory = "512Mi"
           cpu    = "1"
@@ -105,6 +106,7 @@ resource "google_cloud_run_v2_service" "parquet_migrator" {
       image = "gcr.io/${var.project_id}/parquet-migrator:latest" # Image will be built & pushed during deployment
 
       resources {
+        cpu_idle = true
         limits = {
           memory = "512Mi"
           cpu    = "1"

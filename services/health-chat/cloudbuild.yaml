@@ -31,6 +31,7 @@ steps:
       - --memory=512Mi
       - --cpu=1
       - --timeout=120
+      - --cpu-throttling
       - --set-env-vars=PROJECT_ID=$PROJECT_ID,GEMINI_API_KEY=$$GEMINI_API_KEY
       - --set-secrets=GEMINI_API_KEY=gemini-api-key:latest
 
